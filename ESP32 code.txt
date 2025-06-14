@@ -1,0 +1,89 @@
+#include <WiFi.h>
+#include <SPI.h>
+#include <LoRa.h>
+#include <HTTPClient.h>
+
+// Setări WiFi
+const char* ssid = "Galaxy S23 Ultra";
+const char* password = "xlod8705";
+
+// ThingSpeak
+const char* apiKey = "R91DUFDE9OGJ809G";
+const char* server = "http://api.thingspeak.com/update";
+
+// Setări LoRa
+#define SS_PIN 5
+#define RESET_PIN 4
+#define DIO0_PIN 2
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.println("\nConnecting to WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(100);
+  }
+
+  Serial.println("\nConnected to the WiFi network");
+  Serial.print("Local ESP32 IP: ");
+  Serial.println(WiFi.localIP());
+
+  LoRa.setPins(SS_PIN, RESET_PIN, DIO0_PIN);
+  if (!LoRa.begin(433E6)) {
+    Serial.println("Eroare la inițializarea LoRa!");
+    while (1);
+  }
+  Serial.println("LoRa initializat! Aștept mesaje...");
+}
+
+void loop() {
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    String message = "";
+    while (LoRa.available()) {
+      message += (char)LoRa.read();
+    }
+
+    Serial.print("Mesaj primit: ");
+    Serial.println(message);
+
+    message.replace("{", "");
+    message.replace("}", "");
+
+    float viteza = message.substring(message.indexOf("viteza\":") + 8, message.indexOf(",\"directie")).toFloat();
+    int directie = message.substring(message.indexOf("\"directie\":") + 11, message.indexOf(",\"temp")).toInt();
+    float temp = message.substring(message.indexOf("\"temp\":") + 7, message.indexOf(",\"umid")).toFloat();
+    float umid = message.substring(message.indexOf("\"umid\":") + 7, message.indexOf(",\"ten")).toFloat();
+    float ten = message.substring(message.indexOf("\"ten\":") + 6, message.indexOf(",\"presiune")).toFloat();
+    float presiune = message.substring(message.indexOf("\"presiune\":") + 11, message.indexOf(",\"n")).toFloat();
+    int nivelApa = message.substring(message.indexOf("\"n\":") + 4).toInt();
+
+    Serial.println("Trimitem datele către ThingSpeak...");
+
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      String url = String(server) + "?api_key=" + apiKey +
+                   "&field1=" + String(viteza) +
+                   "&field2=" + String(directie) +
+                   "&field3=" + String(temp) +
+                   "&field4=" + String(umid) +
+                   "&field5=" + String(ten) +
+                   "&field6=" + String(presiune) +
+                   "&field7=" + String(nivelApa);
+
+      http.begin(url);
+      int httpCode = http.GET();
+      if (httpCode > 0) {
+        Serial.println("Date trimise cu succes!");
+      } else {
+        Serial.println("Eroare la trimitere ThingSpeak.");
+      }
+      http.end();
+    }
+  }
+}

@@ -1,0 +1,154 @@
+#include <SoftwareSerial.h>
+#include <ModbusMaster.h>
+#include <Adafruit_AHTX0.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_INA219.h>
+#include <SPI.h>
+#include <LoRa.h>
+#include <LowPower.h> // <- ADĂUGAT pentru somn
+
+#define RE_DE_PIN 2
+#define RX_PIN1 3
+#define TX_PIN1 4
+#define RX_PIN2 5
+#define TX_PIN2 6
+
+#define WATER_LEVEL_PIN A0
+
+#define SS_PIN 10
+#define RESET_PIN 9
+#define DIO0_PIN 2
+
+Adafruit_AHTX0 aht;
+Adafruit_BMP280 bmp;
+Adafruit_INA219 ina219;
+
+SoftwareSerial RS485Serial1(RX_PIN1, TX_PIN1);
+SoftwareSerial RS485Serial2(RX_PIN2, TX_PIN2);
+
+ModbusMaster node1;
+ModbusMaster node2;
+
+void preTransmission() {
+  digitalWrite(RE_DE_PIN, HIGH);
+}
+
+void postTransmission() {
+  digitalWrite(RE_DE_PIN, LOW);
+}
+
+int getDirectionCode(float degrees) {
+  degrees *= 10;
+  if (degrees >= 337.5 || degrees < 22.5) return 1;
+  if (degrees < 67.5) return 2;
+  if (degrees < 112.5) return 3;
+  if (degrees < 157.5) return 4;
+  if (degrees < 202.5) return 5;
+  if (degrees < 247.5) return 6;
+  if (degrees < 292.5) return 7;
+  return 8;
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(RE_DE_PIN, OUTPUT);
+  digitalWrite(RE_DE_PIN, LOW);
+  pinMode(WATER_LEVEL_PIN, INPUT);
+
+  RS485Serial1.begin(4800);
+  RS485Serial2.begin(4800);
+
+  node1.begin(1, RS485Serial1);
+  node2.begin(1, RS485Serial2);
+  node1.preTransmission(preTransmission);
+  node1.postTransmission(postTransmission);
+  node2.preTransmission(preTransmission);
+  node2.postTransmission(postTransmission);
+
+  LoRa.setPins(SS_PIN, RESET_PIN, DIO0_PIN);
+  if (!LoRa.begin(433E6)) {
+    Serial.println(F("Eroare la inițializarea LoRa!"));
+    while (1);
+  }
+  Serial.println(F("LoRa initializat!"));
+
+  if (aht.begin()) Serial.println(F("AHT20 OK"));
+  else Serial.println(F("Eroare AHT20"));
+
+  if (bmp.begin(0x76)) Serial.println(F("BMP280 OK"));
+  else Serial.println(F("Eroare BMP280"));
+
+  if (ina219.begin()) Serial.println(F("INA219 OK"));
+  else Serial.println(F("Eroare INA219"));
+}
+
+void sendLoRaJSON(String jsonMessage) {
+  LoRa.beginPacket();
+  LoRa.print(jsonMessage);
+  LoRa.endPacket();
+  Serial.print(F("JSON trimis: "));
+  Serial.println(jsonMessage);
+}
+
+void loop() {
+  uint16_t data[2];
+  uint16_t directionData[2];
+  String json = "{";
+
+  // Viteza vântului
+  RS485Serial1.listen();
+  float windSpeed = 0.0;
+  if (node1.readHoldingRegisters(0x00, 2) == node1.ku8MBSuccess) {
+    data[0] = node1.getResponseBuffer(0);
+    data[1] = node1.getResponseBuffer(1);
+    windSpeed = ((data[0] << 16) | data[1]);
+  }
+  json += "\"viteza\":" + String(windSpeed, 2) + ",";
+
+  delay(1000);
+
+  // Direcția vântului
+  RS485Serial2.listen();
+  int directionCode = 0;
+  if (node2.readHoldingRegisters(0x00, 2) == node2.ku8MBSuccess) {
+    directionData[0] = node2.getResponseBuffer(0);
+    directionData[1] = node2.getResponseBuffer(1);
+    float windDir = ((directionData[0] << 16) | directionData[1]) / 10.0;
+    directionCode = getDirectionCode(windDir);
+  }
+  json += "\"directie\":" + String(directionCode) + ",";
+
+  delay(1000);
+
+  // AHT20 - temperatură și umiditate
+  sensors_event_t humidity, temp;
+  aht.getEvent(&humidity, &temp);
+  json += "\"temp\":" + String(temp.temperature, 2) + ",";
+  json += "\"umid\":" + String(humidity.relative_humidity, 2) + ",";
+
+  delay(1000);
+
+  // Tensiune
+  float tensiune = ina219.getBusVoltage_V();
+  json += "\"ten\":" + String(tensiune, 2) + ",";
+
+  // Presiune atmosferică
+  float presiune = bmp.readPressure() / 100.0F;
+  json += "\"presiune\":" + String(presiune, 2) + ",";
+
+  // Nivel apă
+  int nivelApa = analogRead(WATER_LEVEL_PIN);
+  json += "\"n\":" + String(nivelApa);
+
+  json += "}";
+
+  delay(1000);
+  sendLoRaJSON(json);
+  Serial.println(F("--------------------------"));
+  delay(1000);
+  // 🔋 SLEEP: intră în somn pentru ~10 secunde (10 secunde)
+  
+  LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
+  LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF);
+  
+}
